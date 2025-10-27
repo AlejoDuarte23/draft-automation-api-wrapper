@@ -93,7 +93,7 @@ def complete_signed_s3_upload(
     header = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     r = requests.post(url, headers=header, json=payload, timeout=30)
     r.raise_for_status()
-    return CompleteUploadRequest.model_validate(**r.json())
+    return CompleteUploadRequest.model_validate(r.json())
 
 def build_oss_urn(
         bucketKey:Annotated[str, "Unique Name of the bucket"],
@@ -157,3 +157,12 @@ def dowload_from_signed_url(
     
     return r.status_code
         
+def short_appbundle_id(app_bundle_full_alias: Annotated[str, "Example: 'myNick.DeleteWallsApp+test'"]) -> str:
+    """
+    Extract the short AppBundle id used inside $(appbundles[SHORT].path)
+    Example input: 'myNick.DeleteWallsApp+test'
+    """
+    right = app_bundle_full_alias.split(".", 1)[-1]
+    return right.split("+", 1)[0]
+
+ 

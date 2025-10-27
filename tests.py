@@ -26,7 +26,7 @@ def test_upload_register_appbundle(token:str):
     r = delete_appbundle(app_bundle_name, token=token)
 
 def test_upload_and_download_to_bucket(token: str) -> None: 
-    bucketKey = "natalisbucket4"
+    bucketKey = "natalisbucket5"
     objectKey = "wombat4.rvt"
 
     # 1. Path to the file

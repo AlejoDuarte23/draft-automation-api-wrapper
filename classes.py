@@ -1,118 +1,153 @@
+# classes.py
 import json
+from typing import Literal, Any, Dict, List, Optional
+from pydantic import BaseModel, Field
 from main import (
     create_bucket,
     get_signed_s3_upload,
     put_to_signed_url,
     complete_signed_s3_upload,
     build_oss_urn,
+    get_signed_s3_download,
+    dowload_from_signed_url,
+    create_activity,
+    create_activity_alias,
 )
-from pydantic import BaseModel, Field
-from typing import Literal, Any
-
 
 class ActivityParameter(BaseModel):
-    zip: bool = Field(default=False)
-    ondemand: bool = Field(default=False)
+    name: str
+    localName: str
     verb: Literal["get", "put", "post"]
     description: str
+    zip: bool = Field(default=False)
+    ondemand: bool = Field(default=False)
     required: bool = Field(default=False)
-    localName: str
 
-    def upload_file_to_oss(
-        self, bucketKey: str, objectKey: str, file_path: str, token: str
-    ) -> None:
+    # storage, optional for JSON params
+    bucketKey: Optional[str] = None
+    objectKey: Optional[str] = None
+
+    # roles
+    is_output: bool = False
+    is_engine_input: bool = False
+
+    def _oss_keys(self) -> tuple[str, str]:
+        if not self.bucketKey or not self.objectKey:
+            raise ValueError(f"{self.name}: bucketKey and objectKey are required for OSS operations")
+        return self.bucketKey, self.objectKey
+
+    def ensure_bucket(self, token: str) -> None:
         try:
-            bucket_response = create_bucket(bucketKey=bucketKey, token=token)
-            # get resposne if bucket already exists and son on
+            create_bucket(bucketKey=self.bucketKey, token=token)  # type: ignore[arg-type]
         except Exception:
             pass
 
-        # 3. Generate s3 signed urls
-        signed_url_response = get_signed_s3_upload(
-            bucketKey=bucketKey, objectKey=objectKey, token=token
-        )
-        upload_key = signed_url_response.uploadKey
-        signed_url = signed_url_response.urls[0]
+    def upload_file_to_oss(self, file_path: str, token: str) -> None:
+        bucketKey, objectKey = self._oss_keys()
+        self.ensure_bucket(token)
+        signed = get_signed_s3_upload(bucketKey=bucketKey, objectKey=objectKey, token=token)
+        put_to_signed_url(signed_url=signed.urls[0], file_path=file_path)
+        complete_signed_s3_upload(bucketKey=bucketKey, objectKey=objectKey, uploadKey=signed.uploadKey, token=token)
 
-        # 4. Upload to signed s3 key
-        status = put_to_signed_url(signed_url=signed_url, file_path=file_path)
+    def download_to(self, output_path: str, token: str) -> None:
+        if not self.is_output:
+            raise ValueError(f"{self.name}: download_to is only valid for output parameters")
+        bucketKey, objectKey = self._oss_keys()
+        signed = get_signed_s3_download(bucketKey=bucketKey, objectKey=objectKey, token=token)
+        dowload_from_signed_url(signed_url=signed["url"], output_path=output_path)
 
-        # 5. Confirm Upload
-        response = complete_signed_s3_upload(
-            bucketKey=bucketKey, objectKey=objectKey, uploadKey=upload_key, token=token
-        )
-        print(response)
-
-    def generate_oss_urn(self, bucketKey: str, objectKey: str) -> str:
+    def generate_oss_urn(self) -> str:
+        bucketKey, objectKey = self._oss_keys()
         return build_oss_urn(bucketKey=bucketKey, objectKey=objectKey)
+
+    def to_api_param(self) -> Dict[str, Any]:
+        return {
+            "localName": self.localName,
+            "zip": self.zip,
+            "ondemand": self.ondemand,
+            "verb": self.verb,
+            "description": self.description,
+            "required": self.required,
+        }
 
 
 class ActivityInputParameter(ActivityParameter):
+    is_output: bool = False
 
-    def generate_work_item_params(
-        self, param_name: str, bucketKey: str, objectKey: str, token: str
-    ):
+    def work_item_arg(self, token: str) -> Dict[str, Any]:
         return {
-            param_name: {
-                "url": self.generate_oss_urn(bucketKey, objectKey),
+            self.name: {
+                "url": self.generate_oss_urn(),
                 "verb": self.verb,
                 "headers": {"Authorization": f"Bearer {token}"},
             }
         }
 
 
-class ActivityOutputParameter(ActivityInputParameter):
-    pass
+class ActivityOutputParameter(ActivityParameter):
+    is_output: bool = True
 
-
-class ActivityJsonParameter(ActivityParameter):
-    def generate_work_item_params(self, param_name: str, data: dict):
-        data_str = json.dumps(data, separators=(",", ":"))
+    def work_item_arg(self, _token: str) -> Dict[str, Any]:
+        # outputs do not need auth headers
         return {
-            param_name: {
-                "url": f"data:application/json, {data_str}",
+            self.name: {
+                "url": self.generate_oss_urn(),
+                "verb": self.verb,
+                "headers": {"Authorization": f"Bearer {_token}"},
             }
         }
 
 
-class ActivityModel(BaseModel):
-    """Works for a single app bundle"""
+class ActivityJsonParameter(ActivityParameter):
+    def work_item_arg(self, data: dict) -> Dict[str, Any]:
+        data_str = json.dumps(data, separators=(",", ":"))
+        return {self.name: {"url": f"data:application/json, {data_str}"}}
 
+
+class ActivityModel(BaseModel):
     id: str
-    commandLine: list[str] | None = None
-    parameters: dict[str, ActivityParameter]
-    engine: str | None
+    parameters: List[ActivityParameter]
+    engine: Optional[str] = None
     appbundle_full_name: str
     description: str
     alias: str
+    commandLine: Optional[List[str]] = None
 
-    def to_api_dict(self) -> dict[str, Any]:
-        params_dump = {
-            k: p.model_dump(by_alias=True) for k, p in self.parameters.items()
-        }
+    def _param_map(self) -> Dict[str, Dict[str, Any]]:
+        return {p.name: p.to_api_param() for p in self.parameters}
+
+    @staticmethod
+    def short_appbundle_id(appbundle_full_alias: str) -> str:
+        right = appbundle_full_alias.split(".", 1)[-1]
+        return right.split("+", 1)[0]
+
+    def set_revit_command_line(self) -> None:
+        revit_input = next((p for p in self.parameters if isinstance(p, ActivityInputParameter) and p.is_engine_input), None)
+        if revit_input is None:
+            raise ValueError("No Revit input parameter marked as engine input")
+        appbundle_short_id = self.short_appbundle_id(self.appbundle_full_name)
+        self.commandLine = [
+            "$(engine.path)\\revitcoreconsole.exe "
+            f'/i "$(args[{revit_input.name}].path)" '
+            f'/al "$(appbundles[{appbundle_short_id}].path)"'
+        ]
+
+    def to_api_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
             "commandLine": self.commandLine,
-            "parameters": params_dump,
+            "parameters": self._param_map(),
             "engine": self.engine,
             "appbundles": [self.appbundle_full_name],
             "description": self.description,
         }
 
-    @staticmethod
-    def short_appbundle_id(appbundle_full_alias: str) -> str:
-        """Check"""
-        # "MyBundle+prod" -> "MyBundle"
-        right = appbundle_full_alias.split(".", 1)[-1]
-        return right.split("+", 1)[0]
+    def deploy(self, token: str) -> None:
+        self.set_revit_command_line()
+        create_activity(token=token, payload=self.to_api_dict())
+        create_activity_alias(activity_id=self.id, alias_id=self.alias, version=1, token=token)
 
-    def set_revit_command_line(
-        self,
-        input_param_name: str,
-    ) -> None:
-        appbundle_short_id = self.short_appbundle_id(self.appbundle_full_name)
-        self.commandLine = (
-            "$(engine.path)\\revitcoreconsole.exe "
-            f'/i "$(args[{input_param_name}].path)" '
-            f'/al "$(appbundles[{appbundle_short_id}].path)"'
-        )
+class AppbundelModel(BaseModel):
+    appBundleId: str
+    engine: str
+    t

@@ -251,4 +251,42 @@ def get_workitem_status(workitem_id: str, token: str) -> dict[str, Any]:
     )
     r.raise_for_status()
     return r.json()
+
+
+def poll_workitem_status(workitem_id: str, token: str, max_wait: int = 600, interval: int = 10) -> dict[str, Any]:
+    """
+    Poll a WorkItem until it completes or times out.
+    
+    Args:
+        workitem_id: The ID of the WorkItem to poll
+        token: Authentication token
+        max_wait: Maximum time to wait in seconds (default: 600)
+        interval: Polling interval in seconds (default: 10)
+    
+    Returns:
+        dict containing the final status response
+    """
+    import time
+    import logging
+    
+    elapsed = 0
+    logging.info("Polling work item status, id=%s", workitem_id)
+
+    last_status = ""
+    status_resp = {}
+    
+    while elapsed < max_wait:
+        status_resp = get_workitem_status(workitem_id, token)
+        last_status = status_resp.get("status", "")
+        report_url = status_resp.get('reportUrl')
+        logging.info("[%3ds] status=%s report_url=%s", elapsed, last_status, report_url)
+        if last_status in {"success", "failedUpload", "cancelled"}:
+            report = status_resp.get("reportUrl")
+            if report:
+                logging.info("Report URL: %s", report)
+            break
+        time.sleep(interval)
+        elapsed += interval
+    
+    return status_resp
     

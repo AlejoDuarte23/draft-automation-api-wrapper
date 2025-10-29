@@ -12,7 +12,11 @@ from main import (
     dowload_from_signed_url,
     create_activity,
     create_activity_alias,
+    upload_appbundle,
+    create_appbundle_alias,
+    register_appbundle
 )
+from dsl import RegisterBundleResponse, CompleteUploadRequest, UploadParameters
 
 class ActivityParameter(BaseModel):
     name: str
@@ -147,7 +151,39 @@ class ActivityModel(BaseModel):
         create_activity(token=token, payload=self.to_api_dict())
         create_activity_alias(activity_id=self.id, alias_id=self.alias, version=1, token=token)
 
-class AppbundelModel(BaseModel):
+class AppBundleModel(BaseModel):
     appBundleId: str
     engine: str
-    t
+    alias: str
+    zip_path: str
+    description: str
+    version: int = 0  # updated on deploy
+
+    def register(self, token: str) -> RegisterBundleResponse:
+        return register_appbundle(
+            appBundleId=self.appBundleId,
+            engine=self.engine,
+            description=self.description,
+            token=token,
+        )
+
+    def upload(self, uploadParameters: UploadParameters) -> int:
+        return upload_appbundle(
+            upload_parameters=uploadParameters,
+            zip_path=self.zip_path,
+        )
+
+    def create_alias(self, token: str) -> dict:
+        return create_appbundle_alias(
+            app_id=self.appBundleId,
+            alias_id=self.alias,
+            version=self.version,
+            token=token,
+        )
+
+    def deploy(self, token: str) -> int:
+        reg = self.register(token)
+        self.upload(reg.uploadParameters)
+        self.version = int(reg.version)
+        self.create_alias(token)
+        return self.version

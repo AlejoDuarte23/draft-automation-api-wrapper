@@ -1,6 +1,5 @@
 # usage_ifc_export.py
 import os
-import time
 import json
 import logging
 from pathlib import Path
@@ -11,16 +10,14 @@ from classes import (
     ActivityInputParameter,
     ActivityOutputParameter,
     ActivityJsonParameter,
+    AppBundleModel
 )
 
 from main import (
     get_token,
     get_nickname,
-    register_appbundle,
-    upload_appbundle,
-    create_appbundle_alias,
     run_work_item,
-    get_workitem_status,
+    poll_workitem_status,
 )
 
 load_dotenv()
@@ -30,33 +27,27 @@ CLIENT_ID = os.getenv("CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET", "")
 
 # Example constants
-app_bundle_name = "IFCExportBundle8"
-activity_name = "RevitIFCExportAppActivity7"
+app_bundle_name = "IFCExportBundle9"
+activity_name = "RevitIFCExportAppActivity8"
 alias = "prod"
-bucket_key = "bucket_13776_ifc_export7"
-
+bucket_key = "bucket_13776_ifc_export10"
+zip_path = Path(__file__).parent / "bundles" / "ifcExportDA.bundle.zip"
+ 
 def main() -> None:
     token = get_token(client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
     nickname = get_nickname(token)
 
     appbundle_full_alias = f"{nickname}.{app_bundle_name}+{alias}"
     activity_full_alias = f"{nickname}.{activity_name}+{alias}"
-
     # Step 1, register and upload the app bundle, then create alias
-    register_resp = register_appbundle(
+    bundle = AppBundleModel(
         appBundleId=app_bundle_name,
         engine="Autodesk.Revit+2024",
-        token=token,
+        alias=alias,
+        zip_path=str(zip_path),
         description="Exports IFC from selected views",
     )
-    zip_path = Path(__file__).parent / "bundles" / "ifcExportDA.bundle.zip"
-    upload_appbundle(register_resp.uploadParameters, zip_path=str(zip_path))
-    create_appbundle_alias(
-        token=token,
-        app_id=app_bundle_name,
-        alias_id=alias,
-        version=register_resp.version,
-    )
+    bundle.deploy(token)
 
     # Step 2, define activity parameters that include storage keys
     input_revit = ActivityInputParameter(
@@ -109,10 +100,11 @@ def main() -> None:
         settings = json.load(f)
 
     # Step 6, build work item args from parameters
-    wi_args = {}
-    wi_args |= input_revit.work_item_arg(token)
-    wi_args |= output_zip.work_item_arg(token)
-    wi_args |= input_json.work_item_arg(settings)
+    wi_args = {
+        **input_revit.work_item_arg(token),
+        **output_zip.work_item_arg(token), 
+        **input_json.work_item_arg(settings)
+    }
 
     # Step 7, run work item
     wi_resp = run_work_item(
@@ -125,24 +117,8 @@ def main() -> None:
         raise RuntimeError("No work item id returned")
 
     # Step 8, poll status
-    max_wait = 600
-    interval = 10
-    elapsed = 0
-    logging.info("Polling work item status, id=%s", work_item_id)
-
-    last_status = ""
-    while elapsed < max_wait:
-        status_resp = get_workitem_status(work_item_id, token)
-        last_status = status_resp.get("status", "")
-        report_url = status_resp.get('reportUrl')
-        logging.info("[%3ds] status=%s", elapsed, last_status, report_url)
-        if last_status in {"success", "failedUpload", "cancelled"}:
-            report = status_resp.get("reportUrl")
-            if report:
-                logging.info("Report URL: %s", report)
-            break
-        time.sleep(interval)
-        elapsed += interval
+    status_resp = poll_workitem_status(work_item_id, token, max_wait=600, interval=10)
+    last_status = status_resp.get("status", "")
 
     # Step 9, download result if successful
     if last_status == "success":

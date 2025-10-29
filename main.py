@@ -30,6 +30,23 @@ def get_token(client_id: str, client_secret: str) -> str:
     token = response.json()["access_token"]
     return token
 
+def get_nickname(token: str) -> str:
+    """
+    Get the nickname (owner/qualifier) for the current APS account.
+    This is the prefix used for AppBundles and Activities.
+    Returns the nickname string directly.
+    """
+    url = f"{DA_BASE_URL}/forgeapps/me"
+    r = requests.get(
+        url,
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    # The API returns a JSON object with nickname and publicKey
+    # Example response: {"nickname": "viktortest", "publicKey": {...}}
+    response_data = r.json()
+    return response_data.get("nickname", response_data)
 
 def create_bucket(
     bucketKey: Annotated[str, "Unique Name you assign to a bucket, Possible values: -_.a-z0-9 (between 3-128 characters in length"],
@@ -122,6 +139,24 @@ def upload_appbundle(upload_parameters: UploadParameters, zip_path: str) -> Anno
     r.raise_for_status()
     return r.status_code
 
+def create_appbundle_alias(
+    app_id: str, alias_id: str, version: int, token: str
+) -> dict[str, Any]:
+    """
+    Create an alias for an AppBundle version.
+    """
+    url = f"{DA_BASE_URL}/appbundles/{app_id}/aliases"
+    payload = {"version": version, "id": alias_id}
+    header = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    r = requests.post(
+        url,
+        headers=header,
+        json=payload,
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()
+
 def delete_appbundle(appbundleId:str, token: str) -> ...:
     """
     If return 204 then ok
@@ -157,12 +192,63 @@ def dowload_from_signed_url(
     
     return r.status_code
         
-def short_appbundle_id(app_bundle_full_alias: Annotated[str, "Example: 'myNick.DeleteWallsApp+test'"]) -> str:
+def create_activity_alias(
+    activity_id: str, alias_id: str, version: int, token: str
+) -> dict[str, Any]:
     """
-    Extract the short AppBundle id used inside $(appbundles[SHORT].path)
-    Example input: 'myNick.DeleteWallsApp+test'
+    Create an alias for an Activity version.
     """
-    right = app_bundle_full_alias.split(".", 1)[-1]
-    return right.split("+", 1)[0]
+    url = f"{DA_BASE_URL}/activities/{activity_id}/aliases"
+    payload = {"version": version, "id": alias_id}
+    r = requests.post(
+        url,
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()
 
- 
+
+def create_activity(
+    token: str,
+    payload: dict
+) -> dict:
+    url = f"{DA_BASE_URL}/activities"
+    r = requests.post(url, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, json=payload, timeout=30)
+    
+    if r.status_code != 200:
+        print(f" Error found: {r.text=}")
+    
+    r.raise_for_status()
+    return r.json()
+
+
+def run_work_item(token: str, full_activity_alias: str, work_item_args: dict[str,Any]):
+    url = f"{DA_BASE_URL}/workitems"
+    payload = {
+        "activityId": full_activity_alias,
+        "arguments": work_item_args 
+    }
+    r = requests.post(url, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, json=payload, timeout=30)
+    
+    if r.status_code != 200:
+        print(f" Error found: {r.text=}")
+    
+    r.raise_for_status()
+    return r.json()
+
+
+def get_workitem_status(workitem_id: str, token: str) -> dict[str, Any]:
+    """
+    Get the current status and report URL for a WorkItem.
+    """
+    url = f"{DA_BASE_URL}/workitems/{workitem_id}"
+    r = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()
+    
